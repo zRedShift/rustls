@@ -32,7 +32,7 @@ mod tests {
         let mut r = Reader::init(bytes);
 
         while r.any_left() {
-            let m = OpaqueMessage::read(&mut r).unwrap();
+            let m: OpaqueMessage = OpaqueMessage::read(&mut r).unwrap();
 
             let out = m.clone().encode();
             assert!(!out.is_empty());

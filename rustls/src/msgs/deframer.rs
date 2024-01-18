@@ -111,6 +111,7 @@ impl MessageDeframer {
                 let BorrowedOpaqueMessage {
                     typ,
                     version,
+                    dtls,
                     payload,
                 } = m;
                 let raw_payload = RawSlice::from(&*payload);
@@ -119,6 +120,7 @@ impl MessageDeframer {
                 let message = BorrowedPlainMessage {
                     typ,
                     version,
+                    dtls,
                     payload: buffer.take(raw_payload),
                 };
                 return Ok(Some(Deframed {
@@ -166,6 +168,7 @@ impl MessageDeframer {
                 let BorrowedPlainMessage {
                     typ,
                     version,
+                    dtls,
                     payload,
                 } = msg;
                 let raw_payload = RawSlice::from(payload);
@@ -174,6 +177,7 @@ impl MessageDeframer {
                 let message = BorrowedPlainMessage {
                     typ,
                     version,
+                    dtls,
                     payload: buffer.take(raw_payload),
                 };
                 return Ok(Some(Deframed {
@@ -224,6 +228,7 @@ impl MessageDeframer {
         let message = BorrowedPlainMessage {
             typ,
             version,
+            dtls: (),
             payload: buffer.take(raw_payload),
         };
 
@@ -419,7 +424,7 @@ impl DeframerVecBuffer {
         // At this point, the buffer resizing logic below should reduce the buffer size.
         let allow_max = match is_joining_hs {
             true => MAX_HANDSHAKE_SIZE as usize,
-            false => OpaqueMessage::MAX_WIRE_SIZE,
+            false => OpaqueMessage::<()>::MAX_WIRE_SIZE,
         };
 
         if self.used >= allow_max {
@@ -905,7 +910,7 @@ mod tests {
         assert_len(4096, d.input_bytes(&message));
         assert_len(4096, d.input_bytes(&message));
         assert_len(
-            OpaqueMessage::MAX_WIRE_SIZE - 16_384,
+            OpaqueMessage::<()>::MAX_WIRE_SIZE - 16_384,
             d.input_bytes(&message),
         );
         assert!(d.input_bytes(&message).is_err());

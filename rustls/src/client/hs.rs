@@ -338,6 +338,7 @@ fn emit_client_hello_for_retry(
             // (retryreq == None means we're in the "initial ClientHello" case)
             None => ProtocolVersion::TLSv1_0,
         },
+        dtls: (),
         payload: MessagePayload::handshake(chp),
     };
 

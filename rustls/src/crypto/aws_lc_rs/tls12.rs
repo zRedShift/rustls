@@ -307,7 +307,7 @@ impl MessageEncrypter for GcmMessageEncrypter {
             .map(|tag| payload.extend(tag.as_ref()))
             .map_err(|_| Error::EncryptError)?;
 
-        Ok(OpaqueMessage::new(msg.typ, msg.version, payload))
+        Ok(OpaqueMessage::new(msg.typ, msg.version, (), payload))
     }
 
     fn encrypted_payload_len(&self, payload_len: usize) -> usize {
@@ -382,7 +382,7 @@ impl MessageEncrypter for ChaCha20Poly1305MessageEncrypter {
             .seal_in_place_append_tag(nonce, aad, &mut buf)
             .map_err(|_| Error::EncryptError)?;
 
-        Ok(OpaqueMessage::new(msg.typ, msg.version, buf))
+        Ok(OpaqueMessage::new(msg.typ, msg.version, (), buf))
     }
 
     fn encrypted_payload_len(&self, payload_len: usize) -> usize {

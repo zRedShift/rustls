@@ -5,15 +5,16 @@ use crate::internal::record_layer::RecordLayer;
 use crate::msgs::alert::AlertMessagePayload;
 use crate::msgs::base::Payload;
 use crate::msgs::ccs::ChangeCipherSpecPayload;
-use crate::msgs::codec::{Codec, Reader};
+use crate::msgs::codec::{u48, Codec, Reader, ReaderMut};
 use crate::msgs::enums::AlertLevel;
 use crate::msgs::fragmenter::MAX_FRAGMENT_LEN;
 use crate::msgs::handshake::HandshakeMessagePayload;
 
+use crate::msgs::message::sealed::Sealed;
 use alloc::vec::Vec;
+use core::fmt;
 
 use super::base::BorrowedPayload;
-use super::codec::ReaderMut;
 
 #[derive(Debug)]
 pub enum MessagePayload<'a> {
@@ -88,6 +89,69 @@ impl<'a> MessagePayload<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct DtlsEpochSequence(u64);
+
+impl DtlsEpochSequence {
+    pub fn new(epoch: u16, sequence: u48) -> Self {
+        Self(sequence.0 | ((epoch as u64) << u48::BITS))
+    }
+
+    pub fn epoch(self) -> u16 {
+        (self.0 >> u48::BITS) as u16
+    }
+
+    pub fn sequence(self) -> u48 {
+        u48(self.0 & u48::MAX.0)
+    }
+}
+
+impl fmt::Debug for DtlsEpochSequence {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut builder = f.debug_struct("DtlsEpochSequence");
+        builder.field("epoch", &self.epoch());
+        builder.field("sequence", &self.sequence());
+        builder.finish()
+    }
+}
+
+pub trait DtlsExtraFields: for<'a> Codec<'a> + Clone + Copy + Sealed + 'static {
+    const SIZE: u16;
+}
+
+impl DtlsExtraFields for () {
+    const SIZE: u16 = 0;
+}
+
+impl DtlsExtraFields for DtlsEpochSequence {
+    const SIZE: u16 = 8;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for () {}
+    impl Sealed for super::DtlsEpochSequence {}
+}
+
+impl Codec<'_> for () {
+    fn encode(&self, _: &mut Vec<u8>) {}
+
+    fn read(_: &mut Reader) -> Result<Self, InvalidMessage> {
+        Ok(())
+    }
+}
+
+impl Codec<'_> for DtlsEpochSequence {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.0.encode(bytes)
+    }
+
+    fn read(r: &mut Reader) -> Result<Self, InvalidMessage> {
+        u64::read(r).map(Self)
+    }
+}
+
 /// A TLS frame, named TLSPlaintext in the standard.
 ///
 /// This type owns all memory for its interior parts. It is used to read/write from/to I/O
@@ -100,20 +164,39 @@ impl<'a> MessagePayload<'a> {
 /// After the message is decrypted, call [`OpaqueMessage::into_plain_message()`] or borrow this
 /// message and call [`BorrowedOpaqueMessage::into_tls13_unpadded_message`].
 #[derive(Clone, Debug)]
-pub struct OpaqueMessage {
+pub struct OpaqueMessage<D = ()> {
     pub typ: ContentType,
     pub version: ProtocolVersion,
+    pub dtls: D,
     payload: Payload<'static>,
 }
 
 impl OpaqueMessage {
+    pub fn with_dtls(self, dtls: DtlsEpochSequence) -> OpaqueMessage<DtlsEpochSequence> {
+        let Self {
+            typ,
+            version,
+            payload,
+            ..
+        } = self;
+        OpaqueMessage {
+            typ,
+            version,
+            dtls,
+            payload,
+        }
+    }
+}
+
+impl<D: DtlsExtraFields> OpaqueMessage<D> {
     /// Construct a new `OpaqueMessage` from constituent fields.
     ///
     /// `body` is moved into the `payload` field.
-    pub fn new(typ: ContentType, version: ProtocolVersion, body: Vec<u8>) -> Self {
+    pub fn new(typ: ContentType, version: ProtocolVersion, dtls: D, body: Vec<u8>) -> Self {
         Self {
             typ,
             version,
+            dtls,
             payload: Payload::new(body),
         }
     }
@@ -134,7 +217,7 @@ impl OpaqueMessage {
     /// `MessageError` allows callers to distinguish between valid prefixes (might
     /// become valid if we read more data) and invalid data.
     pub fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        let (typ, version, len) = read_opaque_message_header(r)?;
+        let (typ, version, dtls, len) = read_opaque_message_header(r)?;
 
         let mut sub = r
             .sub(len as usize)
@@ -144,6 +227,7 @@ impl OpaqueMessage {
         Ok(Self {
             typ,
             version,
+            dtls,
             payload,
         })
     }
@@ -161,19 +245,21 @@ impl OpaqueMessage {
     ///
     /// This should only be used for messages that are known to be in plaintext. Otherwise, the
     /// `OpaqueMessage` should be decrypted into a `PlainMessage` using a `MessageDecrypter`.
-    pub fn into_plain_message(self) -> PlainMessage {
+    pub fn into_plain_message(self) -> PlainMessage<D> {
         PlainMessage {
             version: self.version,
             typ: self.typ,
+            dtls: self.dtls,
             payload: self.payload,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn borrow(&mut self) -> BorrowedOpaqueMessage {
+    pub(crate) fn borrow(&mut self) -> BorrowedOpaqueMessage<D> {
         BorrowedOpaqueMessage {
             typ: self.typ,
             version: self.version,
+            dtls: self.dtls,
             payload: BorrowedPayload::new(self.payload_mut()),
         }
     }
@@ -183,28 +269,30 @@ impl OpaqueMessage {
     /// for ciphertext overheads.
     const MAX_PAYLOAD: u16 = 16384 + 2048;
 
-    /// Content type, version and size.
-    const HEADER_SIZE: u16 = 1 + 2 + 2;
+    /// Content type, version, optional dtls fields, and size.
+    const HEADER_SIZE: u16 = 1 + 2 + D::SIZE + 2;
 
     /// Maximum on-wire message size.
     pub const MAX_WIRE_SIZE: usize = (Self::MAX_PAYLOAD + Self::HEADER_SIZE) as usize;
 }
 
 /// A borrowed version of [`OpaqueMessage`].
-pub struct BorrowedOpaqueMessage<'a> {
+pub struct BorrowedOpaqueMessage<'a, D = ()> {
     pub typ: ContentType,
     pub version: ProtocolVersion,
+    pub dtls: D,
     pub payload: BorrowedPayload<'a>,
 }
 
-impl<'a> BorrowedOpaqueMessage<'a> {
+impl<'a, D> BorrowedOpaqueMessage<'a, D> {
     /// Force conversion into a plaintext message.
     ///
     /// See [`OpaqueMessage::into_plain_message`] for more information
-    pub fn into_plain_message(self) -> BorrowedPlainMessage<'a> {
+    pub fn into_plain_message(self) -> BorrowedPlainMessage<'a, D> {
         BorrowedPlainMessage {
             typ: self.typ,
             version: self.version,
+            dtls: self.dtls,
             payload: self.payload.into_inner(),
         }
     }
@@ -213,7 +301,7 @@ impl<'a> BorrowedOpaqueMessage<'a> {
     ///
     /// Returns an error if the message (pre-unpadding) is too long, or the padding is invalid,
     /// or the message (post-unpadding) is too long.
-    pub fn into_tls13_unpadded_message(mut self) -> Result<BorrowedPlainMessage<'a>, Error> {
+    pub fn into_tls13_unpadded_message(mut self) -> Result<BorrowedPlainMessage<'a, D>, Error> {
         let payload = &mut self.payload;
 
         if payload.len() > MAX_FRAGMENT_LEN + 1 {
@@ -232,9 +320,11 @@ impl<'a> BorrowedOpaqueMessage<'a> {
         self.version = ProtocolVersion::TLSv1_3;
         Ok(self.into_plain_message())
     }
+}
 
+impl<'a, D: DtlsExtraFields> BorrowedOpaqueMessage<'a, D> {
     pub(crate) fn read(r: &mut ReaderMut<'a>) -> Result<Self, MessageError> {
-        let (typ, version, len) = r.as_reader(read_opaque_message_header)?;
+        let (typ, version, dtls, len) = r.as_reader(read_opaque_message_header)?;
 
         let mut sub = r
             .sub(len as usize)
@@ -244,14 +334,15 @@ impl<'a> BorrowedOpaqueMessage<'a> {
         Ok(Self {
             typ,
             version,
+            dtls,
             payload,
         })
     }
 }
 
-fn read_opaque_message_header(
-    r: &mut Reader<'_>,
-) -> Result<(ContentType, ProtocolVersion, u16), MessageError> {
+fn read_opaque_message_header<'a, D: DtlsExtraFields>(
+    r: &mut Reader<'a>,
+) -> Result<(ContentType, ProtocolVersion, D, u16), MessageError> {
     let typ = ContentType::read(r).map_err(|_| MessageError::TooShortForHeader)?;
     // Don't accept any new content-types.
     if let ContentType::Unknown(_) = typ {
@@ -267,6 +358,8 @@ fn read_opaque_message_header(
         _ => {}
     };
 
+    let dtls = D::read(r).map_err(|_| MessageError::TooShortForHeader)?;
+
     let len = u16::read(r).map_err(|_| MessageError::TooShortForHeader)?;
 
     // Reject undersize messages
@@ -277,11 +370,11 @@ fn read_opaque_message_header(
     }
 
     // Reject oversize messages
-    if len >= OpaqueMessage::MAX_PAYLOAD {
+    if len >= OpaqueMessage::<D>::MAX_PAYLOAD {
         return Err(MessageError::MessageTooLarge);
     }
 
-    Ok((typ, version, len))
+    Ok((typ, version, dtls, len))
 }
 
 /// `v` is a message payload, immediately post-decryption.  This function
@@ -299,8 +392,8 @@ fn unpad_tls13_payload(p: &mut BorrowedPayload) -> ContentType {
     }
 }
 
-impl From<Message<'_>> for PlainMessage {
-    fn from(msg: Message) -> Self {
+impl<D> From<Message<'_, D>> for PlainMessage<D> {
+    fn from(msg: Message<D>) -> Self {
         let typ = msg.payload.content_type();
         let payload = match msg.payload {
             MessagePayload::ApplicationData(payload) => payload.into_owned(),
@@ -314,6 +407,7 @@ impl From<Message<'_>> for PlainMessage {
         Self {
             typ,
             version: msg.version,
+            dtls: msg.dtls,
             payload,
         }
     }
@@ -324,25 +418,28 @@ impl From<Message<'_>> for PlainMessage {
 /// This type owns all memory for its interior parts. It can be decrypted from an OpaqueMessage
 /// or encrypted into an OpaqueMessage, and it is also used for joining and fragmenting.
 #[derive(Clone, Debug)]
-pub struct PlainMessage {
+pub struct PlainMessage<D = ()> {
     pub typ: ContentType,
     pub version: ProtocolVersion,
+    pub dtls: D,
     pub payload: Payload<'static>,
 }
 
-impl PlainMessage {
-    pub fn into_unencrypted_opaque(self) -> OpaqueMessage {
+impl<D: DtlsExtraFields> PlainMessage<D> {
+    pub fn into_unencrypted_opaque(self) -> OpaqueMessage<D> {
         OpaqueMessage {
             version: self.version,
             typ: self.typ,
+            dtls: self.dtls,
             payload: self.payload,
         }
     }
 
-    pub fn borrow(&self) -> BorrowedPlainMessage<'_> {
+    pub fn borrow(&self) -> BorrowedPlainMessage<'_, D> {
         BorrowedPlainMessage {
             version: self.version,
             typ: self.typ,
+            dtls: self.dtls,
             payload: self.payload.bytes(),
         }
     }
@@ -350,12 +447,13 @@ impl PlainMessage {
 
 /// A message with decoded payload
 #[derive(Debug)]
-pub struct Message<'a> {
+pub struct Message<'a, D = ()> {
     pub version: ProtocolVersion,
+    pub dtls: D,
     pub payload: MessagePayload<'a>,
 }
 
-impl Message<'_> {
+impl<D: DtlsExtraFields> Message<'_, D> {
     pub fn is_handshake_type(&self, hstyp: HandshakeType) -> bool {
         // Bit of a layering violation, but OK.
         if let MessagePayload::Handshake { parsed, .. } = &self.payload {
@@ -365,9 +463,21 @@ impl Message<'_> {
         }
     }
 
+    pub(crate) fn into_owned(self) -> Message<'static, D> {
+        let Self { version, dtls, .. } = self;
+        Message {
+            version,
+            dtls,
+            payload: self.payload.into_owned(),
+        }
+    }
+}
+
+impl Message<'_> {
     pub fn build_alert(level: AlertLevel, desc: AlertDescription) -> Self {
         Self {
             version: ProtocolVersion::TLSv1_2,
+            dtls: (),
             payload: MessagePayload::Alert(AlertMessagePayload {
                 level,
                 description: desc,
@@ -378,25 +488,19 @@ impl Message<'_> {
     pub fn build_key_update_notify() -> Self {
         Self {
             version: ProtocolVersion::TLSv1_3,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload::build_key_update_notify()),
-        }
-    }
-
-    pub(crate) fn into_owned(self) -> Message<'static> {
-        let Self { version, payload } = self;
-        Message {
-            version,
-            payload: payload.into_owned(),
         }
     }
 }
 
-impl TryFrom<PlainMessage> for Message<'static> {
+impl<D> TryFrom<PlainMessage<D>> for Message<'static, D> {
     type Error = Error;
 
-    fn try_from(plain: PlainMessage) -> Result<Self, Self::Error> {
+    fn try_from(plain: PlainMessage<D>) -> Result<Self, Self::Error> {
         Ok(Self {
             version: plain.version,
+            dtls: plain.dtls,
             payload: MessagePayload::new(plain.typ, plain.version, plain.payload.bytes())?
                 .into_owned(),
         })
@@ -407,12 +511,13 @@ impl TryFrom<PlainMessage> for Message<'static> {
 ///
 /// A [`PlainMessage`] must contain plaintext content. Encrypted content should be stored in an
 /// [`OpaqueMessage`] and decrypted before being stored into a [`PlainMessage`].
-impl<'a> TryFrom<BorrowedPlainMessage<'a>> for Message<'a> {
+impl<'a, D> TryFrom<BorrowedPlainMessage<'a, D>> for Message<'a, D> {
     type Error = Error;
 
-    fn try_from(plain: BorrowedPlainMessage<'a>) -> Result<Self, Self::Error> {
+    fn try_from(plain: BorrowedPlainMessage<'a, D>) -> Result<Self, Self::Error> {
         Ok(Self {
             version: plain.version,
+            dtls: plain.dtls,
             payload: MessagePayload::new(plain.typ, plain.version, plain.payload)?,
         })
     }
@@ -427,35 +532,36 @@ impl<'a> TryFrom<BorrowedPlainMessage<'a>> for Message<'a> {
 /// This type also cannot decode its internals and
 /// cannot be read/encoded; only `OpaqueMessage` can do that.
 #[derive(Debug)]
-pub struct BorrowedPlainMessage<'a> {
+pub struct BorrowedPlainMessage<'a, D = ()> {
     pub typ: ContentType,
     pub version: ProtocolVersion,
+    pub dtls: D,
     pub payload: &'a [u8],
 }
 
-impl<'a> BorrowedPlainMessage<'a> {
-    pub fn to_unencrypted_opaque(&self) -> OpaqueMessage {
+impl<'a, D: DtlsExtraFields> BorrowedPlainMessage<'a, D> {
+    pub fn to_unencrypted_opaque(&self) -> OpaqueMessage<D> {
         OpaqueMessage {
             version: self.version,
             typ: self.typ,
+            dtls: self.dtls,
             payload: Payload::Owned(self.payload.to_vec()),
         }
     }
 
     pub fn encoded_len(&self, record_layer: &RecordLayer) -> usize {
-        OpaqueMessage::HEADER_SIZE as usize + record_layer.encrypted_len(self.payload.len())
+        OpaqueMessage::<D>::HEADER_SIZE as usize + record_layer.encrypted_len(self.payload.len())
     }
 
-    pub fn into_owned(self) -> PlainMessage {
+    pub fn into_owned(self) -> PlainMessage<D> {
         let Self {
-            typ,
-            version,
-            payload,
+            typ, version, dtls, ..
         } = self;
         PlainMessage {
             typ,
             version,
-            payload: Payload::new(payload),
+            dtls,
+            payload: Payload::new(self.payload),
         }
     }
 }

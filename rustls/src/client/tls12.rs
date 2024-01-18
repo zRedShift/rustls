@@ -493,6 +493,7 @@ fn emit_certificate(
 ) {
     let cert = Message {
         version: ProtocolVersion::TLSv1_2,
+        dtls: (),
         payload: MessagePayload::handshake(HandshakeMessagePayload {
             typ: HandshakeType::Certificate,
             payload: HandshakePayload::Certificate(cert_chain),
@@ -511,6 +512,7 @@ fn emit_clientkx(transcript: &mut HandshakeHash, common: &mut CommonState, pub_k
 
     let ckx = Message {
         version: ProtocolVersion::TLSv1_2,
+        dtls: (),
         payload: MessagePayload::handshake(HandshakeMessagePayload {
             typ: HandshakeType::ClientKeyExchange,
             payload: HandshakePayload::ClientKeyExchange(pubkey),
@@ -536,6 +538,7 @@ fn emit_certverify(
 
     let m = Message {
         version: ProtocolVersion::TLSv1_2,
+        dtls: (),
         payload: MessagePayload::handshake(HandshakeMessagePayload {
             typ: HandshakeType::CertificateVerify,
             payload: HandshakePayload::CertificateVerify(body),
@@ -550,6 +553,7 @@ fn emit_certverify(
 fn emit_ccs(common: &mut CommonState) {
     let ccs = Message {
         version: ProtocolVersion::TLSv1_2,
+        dtls: (),
         payload: MessagePayload::ChangeCipherSpec(ChangeCipherSpecPayload {}),
     };
 
@@ -567,6 +571,7 @@ fn emit_finished(
 
     let f = Message {
         version: ProtocolVersion::TLSv1_2,
+        dtls: (),
         payload: MessagePayload::handshake(HandshakeMessagePayload {
             typ: HandshakeType::Finished,
             payload: HandshakePayload::Finished(verify_data_payload),

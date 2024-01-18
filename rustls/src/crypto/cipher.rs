@@ -8,7 +8,7 @@ use crate::error::Error;
 pub use crate::msgs::base::BorrowedPayload;
 use crate::msgs::codec;
 pub use crate::msgs::message::{
-    BorrowedOpaqueMessage, BorrowedPlainMessage, OpaqueMessage, PlainMessage,
+    BorrowedOpaqueMessage, BorrowedPlainMessage, DtlsEpochSequence, OpaqueMessage, PlainMessage,
 };
 use crate::suites::ConnectionTrafficSecrets;
 
@@ -132,6 +132,35 @@ pub trait MessageDecrypter: Send + Sync {
         msg: BorrowedOpaqueMessage<'a>,
         seq: u64,
     ) -> Result<BorrowedPlainMessage<'a>, Error>;
+
+    #[inline]
+    /// Decrypt the given DTLS message `msg`.
+    fn decrypt_dtls<'a>(
+        &mut self,
+        msg: BorrowedOpaqueMessage<'a, DtlsEpochSequence>,
+    ) -> Result<BorrowedPlainMessage<'a, DtlsEpochSequence>, Error> {
+        let BorrowedOpaqueMessage {
+            typ,
+            version,
+            dtls,
+            payload,
+        } = msg;
+        self.decrypt(
+            BorrowedOpaqueMessage {
+                typ,
+                version,
+                dtls: (),
+                payload,
+            },
+            dtls.sequence().0,
+        )
+        .map(|msg| BorrowedPlainMessage {
+            typ: msg.typ,
+            version: msg.version,
+            dtls,
+            payload: msg.payload,
+        })
+    }
 }
 
 /// Objects with this trait can encrypt TLS messages.
@@ -143,6 +172,30 @@ pub trait MessageEncrypter: Send + Sync {
     /// Return the length of the ciphertext that results from encrypting plaintext of
     /// length `payload_len`
     fn encrypted_payload_len(&self, payload_len: usize) -> usize;
+
+    #[inline]
+    /// Encrypt the given DTLS message `msg`.
+    fn encrypt_dtls(
+        &mut self,
+        msg: BorrowedPlainMessage<DtlsEpochSequence>,
+    ) -> Result<OpaqueMessage<DtlsEpochSequence>, Error> {
+        let BorrowedPlainMessage {
+            typ,
+            version,
+            dtls,
+            payload,
+        } = msg;
+        self.encrypt(
+            BorrowedPlainMessage {
+                typ,
+                version,
+                dtls: (),
+                payload,
+            },
+            dtls.sequence().0,
+        )
+        .map(|msg| msg.with_dtls(dtls))
+    }
 }
 
 impl dyn MessageEncrypter {

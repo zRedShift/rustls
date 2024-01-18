@@ -43,6 +43,7 @@ impl MessageFragmenter {
             .map(move |c| BorrowedPlainMessage {
                 typ,
                 version,
+                dtls: (),
                 payload: c,
             })
     }
@@ -97,6 +98,7 @@ mod tests {
         let m = PlainMessage {
             typ,
             version,
+            dtls: (),
             payload: Payload::new(data),
         };
 
@@ -141,6 +143,7 @@ mod tests {
         let m = PlainMessage {
             typ: ContentType::Handshake,
             version: ProtocolVersion::TLSv1_2,
+            dtls: (),
             payload: Payload::new(b"\x01\x02\x03\x04\x05\x06\x07\x08".to_vec()),
         };
 

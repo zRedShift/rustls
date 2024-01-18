@@ -247,6 +247,38 @@ impl Codec<'_> for u32 {
     }
 }
 
+// Make a distinct type for u48, even though it's a u64 underneath
+#[allow(non_camel_case_types)]
+#[derive(Debug, Copy, Clone)]
+pub struct u48(pub u64);
+
+impl u48 {
+    pub const BITS: u32 = 48;
+    pub const MAX: Self = Self((1 << Self::BITS) - 1);
+}
+
+#[cfg(target_pointer_width = "64")]
+impl From<u48> for usize {
+    #[inline]
+    fn from(v: u48) -> Self {
+        v.0 as Self
+    }
+}
+
+impl Codec<'_> for u48 {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        let be_bytes = u64::to_be_bytes(self.0);
+        bytes.extend_from_slice(&be_bytes[2..]);
+    }
+
+    fn read(r: &mut Reader) -> Result<Self, InvalidMessage> {
+        match r.take(6) {
+            Some(&[a, b, c, d, e, f]) => Ok(Self(u64::from_be_bytes([0, 0, a, b, c, d, e, f]))),
+            _ => Err(InvalidMessage::MissingData("u48")),
+        }
+    }
+}
+
 pub(crate) fn put_u64(v: u64, bytes: &mut [u8]) {
     let bytes: &mut [u8; 8] = (&mut bytes[..8]).try_into().unwrap();
     *bytes = u64::to_be_bytes(v);

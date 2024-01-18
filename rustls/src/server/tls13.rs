@@ -505,6 +505,7 @@ mod client_hello {
 
         let sh = Message {
             version: ProtocolVersion::TLSv1_2,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload {
                 typ: HandshakeType::ServerHello,
                 payload: HandshakePayload::ServerHello(ServerHelloPayload {
@@ -561,6 +562,7 @@ mod client_hello {
         }
         let m = Message {
             version: ProtocolVersion::TLSv1_2,
+            dtls: (),
             payload: MessagePayload::ChangeCipherSpec(ChangeCipherSpecPayload {}),
         };
         common.send_msg(m, false);
@@ -589,6 +591,7 @@ mod client_hello {
 
         let m = Message {
             version: ProtocolVersion::TLSv1_2,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload {
                 typ: HandshakeType::HelloRetryRequest,
                 payload: HandshakePayload::HelloRetryRequest(req),
@@ -680,6 +683,7 @@ mod client_hello {
 
         let ee = Message {
             version: ProtocolVersion::TLSv1_3,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload {
                 typ: HandshakeType::EncryptedExtensions,
                 payload: HandshakePayload::EncryptedExtensions(ep.exts),
@@ -720,6 +724,7 @@ mod client_hello {
 
         let m = Message {
             version: ProtocolVersion::TLSv1_3,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload {
                 typ: HandshakeType::CertificateRequest,
                 payload: HandshakePayload::CertificateRequestTls13(cr),
@@ -762,6 +767,7 @@ mod client_hello {
         let cert_body = CertificatePayloadTls13::new(cert_entries);
         let c = Message {
             version: ProtocolVersion::TLSv1_3,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload {
                 typ: HandshakeType::Certificate,
                 payload: HandshakePayload::CertificateTls13(cert_body),
@@ -797,6 +803,7 @@ mod client_hello {
 
         let m = Message {
             version: ProtocolVersion::TLSv1_3,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload {
                 typ: HandshakeType::CertificateVerify,
                 payload: HandshakePayload::CertificateVerify(cv),
@@ -822,6 +829,7 @@ mod client_hello {
 
         let m = Message {
             version: ProtocolVersion::TLSv1_3,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload {
                 typ: HandshakeType::Finished,
                 payload: HandshakePayload::Finished(verify_data_payload),
@@ -1180,6 +1188,7 @@ impl ExpectFinished {
 
         let m = Message {
             version: ProtocolVersion::TLSv1_3,
+            dtls: (),
             payload: MessagePayload::handshake(HandshakeMessagePayload {
                 typ: HandshakeType::NewSessionTicket,
                 payload: HandshakePayload::NewSessionTicketTls13(payload),
